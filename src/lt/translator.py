@@ -95,8 +95,10 @@ class Translator:
         self.prompt = base_prompt
         self.messages = [{"role": "system", "content": self.prompt}]
         self.client = OpenAI(
-            base_url="http://localhost:8000/v1",
-            api_key="NA"
+            # base_url="http://localhost:8000/v1",
+            # api_key="NA"
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-567924bf23094a1e89fc9070e8156827"
         )
         # 如果是本地tests目录，跳过repo初始化，直接处理文件
         if str(self.path).endswith('tests'):
@@ -192,23 +194,75 @@ class Translator:
 3. 在文档末尾添加许可证声明和免责声明。
 4. 输出修正后的文档。
 """
+        def split_text(text, max_length=3000):
+            """将长文本按段落分块，避免切断代码块和标题"""
+            import re
+            code_block_pattern = re.compile(r'```[\s\S]*?```|::[\s\S]*?(?=\n\S|$)', re.MULTILINE)
+            blocks = []
+            last = 0
+            for m in code_block_pattern.finditer(text):
+                if m.start() > last:
+                    blocks.extend([b for b in text[last:m.start()].split('\n\n') if b.strip()])
+                blocks.append(m.group())
+                last = m.end()
+            if last < len(text):
+                blocks.extend([b for b in text[last:].split('\n\n') if b.strip()])
+            # 合并小块，保证每块不超过max_length
+            merged, buf = [], ''
+            for b in blocks:
+                if len(buf) + len(b) < max_length:
+                    buf += ('\n\n' if buf else '') + b
+                else:
+                    if buf:
+                        merged.append(buf)
+                    buf = b
+            if buf:
+                merged.append(buf)
+            return merged
+
         for target in self.target:
-            self.messages = [self.assistant_message(self.prompt)]
             original_text = open(target, "r", encoding="utf-8").read()
-            self.messages.append(self.user_message(original_text))
-            resp = self.client.chat.completions.create(
-                messages=self.messages,
-                model=self.model,
-            )
-            translation = resp.choices[0].message.content
+            chunks = split_text(original_text, max_length=3000)
+            translated_chunks = []
+            head = ''
+            for idx, chunk in enumerate(chunks):
+                self.messages = [self.assistant_message(self.prompt)]
+                # 只在首块加元数据头部提示
+                if idx == 0:
+                    self.messages.append(self.user_message(chunk))
+                else:
+                    # 后续块去除prompt头部，防止重复
+                    self.messages.append(self.user_message(chunk))
+                resp = self.client.chat.completions.create(
+                    messages=self.messages,
+                    model=self.model,
+                )
+                translation = resp.choices[0].message.content
+                if idx == 0:
+                    # 提取首块头部
+                    import re
+                    m = re.match(r'(-{3,}|# ?-+)[\s\S]*?(-{3,}|# ?-+)', translation)
+                    if m:
+                        head = translation[:m.end()]
+                        body = translation[m.end():].lstrip('\n')
+                        translated_chunks.append(body)
+                    else:
+                        # 没有头部也保留原文
+                        translated_chunks.append(translation)
+                else:
+                    translated_chunks.append(translation)
+            full_translation = '\n\n'.join(translated_chunks)
             # 校对/格式规范
             proof_messages = [self.assistant_message(formatting_prompt)]
-            proof_messages.append(self.user_message(translation))
+            proof_messages.append(self.user_message(full_translation))
             proof_resp = self.client.chat.completions.create(
                 messages=proof_messages,
                 model=self.model,
             )
             proofed = proof_resp.choices[0].message.content
+            # 校对后如头部丢失则自动补回
+            if head and not proofed.lstrip().startswith(head[:10]):
+                proofed = head + '\n' + proofed.lstrip('\n')
             # 输出md格式
             md_path = self.output_dir / (Path(target).stem + ".md")
             with open(md_path, "w", encoding="utf-8") as f:
