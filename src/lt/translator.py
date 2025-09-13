@@ -95,10 +95,8 @@ class Translator:
         self.prompt = base_prompt
         self.messages = [{"role": "system", "content": self.prompt}]
         self.client = OpenAI(
-            # base_url="http://localhost:8000/v1",
-            # api_key="NA"
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_key="sk-567924bf23094a1e89fc9070e8156827"
+            base_url="http://localhost:8000/v1",
+            api_key="NA"
         )
         # 如果是本地tests目录，跳过repo初始化，直接处理文件
         if str(self.path).endswith('tests'):
