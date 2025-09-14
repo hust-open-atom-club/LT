@@ -95,8 +95,11 @@ class Translator:
         self.prompt = base_prompt
         self.messages = [{"role": "system", "content": self.prompt}]
         self.client = OpenAI(
-            base_url="http://localhost:8000/v1",
-            api_key="NA"
+            # base_url="http://localhost:8000/v1",
+            # api_key="NA"
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-567924bf23094a1e89fc9070e8156827"
+            
         )
         # 如果是本地tests目录，跳过repo初始化，直接处理文件
         if str(self.path).endswith('tests'):
@@ -192,7 +195,7 @@ class Translator:
 3. 在文档末尾添加许可证声明和免责声明。
 4. 输出修正后的文档。
 """
-        def split_text(text, max_length=3000):
+        def split_text(text, max_length=2000):
             """将长文本按段落分块，避免切断代码块和标题"""
             import re
             code_block_pattern = re.compile(r'```[\s\S]*?```|::[\s\S]*?(?=\n\S|$)', re.MULTILINE)
@@ -220,36 +223,65 @@ class Translator:
 
         for target in self.target:
             original_text = open(target, "r", encoding="utf-8").read()
-            chunks = split_text(original_text, max_length=3000)
+            chunks = split_text(original_text, max_length=2000)
             translated_chunks = []
             head = ''
+            import re
+            def is_mostly_english(text, threshold=0.3):
+                # 判断文本中英文字符比例，若英文比例大于阈值则认为未翻译
+                en = re.findall(r'[A-Za-z]', text)
+                zh = re.findall(r'[\u4e00-\u9fa5]', text)
+                total = len(en) + len(zh)
+                if total == 0:
+                    return False
+                return len(en) / total > threshold
+
             for idx, chunk in enumerate(chunks):
                 self.messages = [self.assistant_message(self.prompt)]
                 # 只在首块加元数据头部提示
                 if idx == 0:
                     self.messages.append(self.user_message(chunk))
                 else:
-                    # 后续块去除prompt头部，防止重复
-                    self.messages.append(self.user_message(chunk))
+                    continue_prompt = "请继续翻译上文，保持格式一致，不要重复元数据头部。"
+                    self.messages.append(self.user_message(continue_prompt + '\n' + chunk))
                 resp = self.client.chat.completions.create(
                     messages=self.messages,
                     model=self.model,
                 )
                 translation = resp.choices[0].message.content
+                # 检查是否有大段英文未翻译，若有则自动补发一次请求
+                retry_count = 0
+                while is_mostly_english(translation) and retry_count < 2:
+                    retry_prompt = "请将上文所有英文内容全部翻译为中文，除代码块和专有名词外，不要保留英文。"
+                    self.messages.append(self.user_message(retry_prompt + '\n' + chunk))
+                    resp = self.client.chat.completions.create(
+                        messages=self.messages,
+                        model=self.model,
+                    )
+                    translation = resp.choices[0].message.content
+                    retry_count += 1
                 if idx == 0:
-                    # 提取首块头部
-                    import re
                     m = re.match(r'(-{3,}|# ?-+)[\s\S]*?(-{3,}|# ?-+)', translation)
                     if m:
                         head = translation[:m.end()]
                         body = translation[m.end():].lstrip('\n')
                         translated_chunks.append(body)
                     else:
-                        # 没有头部也保留原文
                         translated_chunks.append(translation)
                 else:
                     translated_chunks.append(translation)
             full_translation = '\n\n'.join(translated_chunks)
+            # 去除正文中多余的元数据头部（只保留首个）
+            import re
+            def remove_extra_metadata(text):
+                # 保留首个 --- ... ---，其余全部去除
+                matches = list(re.finditer(r'(-{3,}|# ?-+)[\s\S]*?(-{3,}|# ?-+)', text))
+                if len(matches) > 1:
+                    # 只保留第一个元数据区块
+                    first = matches[0]
+                    text = text[:first.end()] + re.sub(r'(-{3,}|# ?-+)[\s\S]*?(-{3,}|# ?-+)', '', text[first.end():])
+                return text
+            full_translation = remove_extra_metadata(full_translation)
             # 校对/格式规范
             proof_messages = [self.assistant_message(formatting_prompt)]
             proof_messages.append(self.user_message(full_translation))
@@ -261,6 +293,8 @@ class Translator:
             # 校对后如头部丢失则自动补回
             if head and not proofed.lstrip().startswith(head[:10]):
                 proofed = head + '\n' + proofed.lstrip('\n')
+            # 再次去除正文中多余元数据
+            proofed = remove_extra_metadata(proofed)
             # 输出md格式
             md_path = self.output_dir / (Path(target).stem + ".md")
             with open(md_path, "w", encoding="utf-8") as f:
