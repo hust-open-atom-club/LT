@@ -138,7 +138,7 @@ def split_text(text, max_length=3000):
 
     return chunks
 client = OpenAI(
-    api_key="58e58c9a47c2f8f8fe4698520283a6ed.TFzgfEA0w0OK8PLa",
+    api_key="**************",
     base_url="https://open.bigmodel.cn/api/paas/v4/"
 ) 
 # client = OpenAI(
