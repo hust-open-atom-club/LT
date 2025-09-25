@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "@secretlint/secretlint-rule-pattern": "^11.2.4",
+    "@secretlint/secretlint-rule-preset-recommend": "^11.2.4",
+    "secretlint": "^11.2.4"
+  },
+  "dependencies": {
+    "@secretlint/secretlint-rule-openai": "^11.2.4"
+  }
+}
