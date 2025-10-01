@@ -8,6 +8,7 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.schema import BaseOutputParser
 from langchain.schema.runnable import RunnablePassthrough
 import os
+import re
 from .text_chunker import TextChunk
 from ..utils.llm_factory import LLMFactory
 
@@ -173,20 +174,63 @@ class SummaryGenerator:
                 "raw_result": comparison_result
             }
             
+            current_section = None
+            content_buffer = []
+            
             for line in lines:
-                line = line.strip()
-                if line.startswith("- 完整性评分："):
+                line_stripped = line.strip()
+                
+                # 检测新的section开始
+                # 容错处理：匹配"完整性评分"或包含"完整"和"评分"的变体
+                if (line_stripped.startswith("- 完整性评分：") or 
+                    line_stripped.startswith("- 完整ity评分：") or
+                    (line_stripped.startswith("- ") and "评分" in line_stripped and "完整" in line_stripped)):
                     try:
-                        # 提取分数
-                        score_part = line.split("：")[1]
-                        score = int(''.join(filter(str.isdigit, score_part)))
-                        result["completeness_score"] = score
+                        # 提取分数，支持多种格式：8/10, 8分, 8
+                        score_part = line_stripped.split("：")[1] if "：" in line_stripped else line_stripped
+                        # 提取所有数字
+                        numbers = [int(n) for n in re.findall(r'\d+', score_part)]
+                        if numbers:
+                            # 如果有多个数字（如8/10），取第一个
+                            score = numbers[0]
+                            result["completeness_score"] = score
                     except:
                         pass
-                elif line.startswith("- 遗漏内容："):
-                    result["missing_content"] = line.split("：", 1)[1] if "：" in line else ""
-                elif line.startswith("- 建议："):
-                    result["suggestions"] = line.split("：", 1)[1] if "：" in line else ""
+                    current_section = None
+                    
+                elif line_stripped.startswith("- 遗漏内容："):
+                    # 保存之前section的内容
+                    if current_section == "suggestions" and content_buffer:
+                        result["suggestions"] = '\n'.join(content_buffer).strip()
+                    
+                    current_section = "missing_content"
+                    content_buffer = []
+                    # 获取冒号后的内容
+                    first_line_content = line_stripped.split("：", 1)[1].strip() if "：" in line_stripped else ""
+                    if first_line_content:
+                        content_buffer.append(first_line_content)
+                        
+                elif line_stripped.startswith("- 建议："):
+                    # 保存遗漏内容section
+                    if current_section == "missing_content" and content_buffer:
+                        result["missing_content"] = '\n'.join(content_buffer).strip()
+                    
+                    current_section = "suggestions"
+                    content_buffer = []
+                    # 获取冒号后的内容
+                    first_line_content = line_stripped.split("：", 1)[1].strip() if "：" in line_stripped else ""
+                    if first_line_content:
+                        content_buffer.append(first_line_content)
+                        
+                elif current_section and line_stripped:
+                    # 继续收集当前section的内容
+                    content_buffer.append(line_stripped)
+            
+            # 保存最后一个section的内容
+            if current_section == "missing_content" and content_buffer:
+                result["missing_content"] = '\n'.join(content_buffer).strip()
+            elif current_section == "suggestions" and content_buffer:
+                result["suggestions"] = '\n'.join(content_buffer).strip()
             
             return result
             

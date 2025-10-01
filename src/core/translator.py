@@ -174,9 +174,15 @@ class SmartTranslator:
             original_summary, translated_summary
         )
         
-        if comparison_result["completeness_score"] < 8 and comparison_result["missing_content"] != "无":
-            print(f"检测到可能的遗漏内容，完整性评分: {comparison_result['completeness_score']}/10")
-            print(f"遗漏内容: {comparison_result['missing_content']}")
+        # 修改重译条件：只要有遗漏内容或评分低于8分，就触发重译
+        has_missing_content = (comparison_result["missing_content"] and 
+                              comparison_result["missing_content"].strip() and 
+                              comparison_result["missing_content"] != "无")
+        
+        if comparison_result["completeness_score"] < 8 or has_missing_content:
+            print(f"检测到翻译需要改进，完整性评分: {comparison_result['completeness_score']}/10")
+            if has_missing_content:
+                print(f"遗漏内容: {comparison_result['missing_content']}")
             print("正在重新翻译")
             
             retranslated_content = self._retranslate_with_focus(
