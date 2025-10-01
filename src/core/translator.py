@@ -221,10 +221,11 @@ class SmartTranslator:
                                 chunks: List[TextChunk] = None, translated_chunks: List[str] = None) -> str:
         """
         定向重新翻译缺失内容：
-        1) 在chunk列表中定位包含缺失内容的chunk
-        2) 扩展上下文窗口（左右各1-2个chunk）
-        3) 只对相关片段进行重新翻译
-        4) 将重译结果替换回原译文中
+        1) 将中文遗漏内容描述翻译回英文
+        2) 在chunk列表中定位包含缺失内容的chunk
+        3) 扩展上下文窗口（左右各1-2个chunk）
+        4) 只对相关片段进行重新翻译
+        5) 将重译结果替换回原译文中
         """
         try:
             # 如果没有提供chunks，重新分块
@@ -232,23 +233,53 @@ class SmartTranslator:
                 chunks = self.chunker.chunk_text(original_content)
             if translated_chunks is None:
                 return None
-                
-            # 查找包含缺失内容的chunk索引
+            
+            # 步骤1: 将中文遗漏内容描述翻译回英文关键词
+            print("正在将遗漏内容描述转换为英文关键词...")
+            reverse_translation_prompt = ChatPromptTemplate.from_template("""
+你是一个专业的翻译分析专家。请将以下中文描述的遗漏内容转换为对应的英文关键词或短语。
+只输出关键的英文词汇，用逗号分隔，不要有其他解释。
+
+中文描述：
+{missing_content}
+
+请提取出可能在英文原文中出现的关键词（如人名、术语、技术名词等）：
+""")
+            
+            reverse_chain = reverse_translation_prompt | self.llm | TranslationOutputParser()
+            
+            try:
+                english_keywords_str = reverse_chain.invoke({
+                    "missing_content": missing_content
+                })
+                # 提取关键词
+                english_keywords = [kw.strip() for kw in english_keywords_str.split(',') if kw.strip()]
+                print(f"提取的英文关键词: {english_keywords}")
+            except Exception as e:
+                print(f"关键词提取失败，使用备用方案: {e}")
+                # 备用方案：提取已有的英文词汇
+                english_keywords = re.findall(r'[A-Za-z][A-Za-z0-9\-_\.@]+', missing_content)
+            
+            # 步骤2: 在原文chunk中查找包含这些关键词的部分
             relevant_indices = []
-            missing_keywords = missing_content.split()[:5]  # 取前5个关键词
             
+            print(f"在 {len(chunks)} 个chunk中搜索关键词...")
             for i, chunk in enumerate(chunks):
-                # 检查是否包含缺失内容的关键词
                 chunk_lower = chunk.content.lower()
-                missing_lower = missing_content.lower()
                 
-                # 直接匹配或关键词匹配
-                if (missing_lower in chunk_lower or 
-                    any(keyword.lower() in chunk_lower for keyword in missing_keywords if len(keyword) > 2)):
-                    relevant_indices.append(i)
+                # 检查是否包含任何关键词
+                matches = sum(1 for keyword in english_keywords if keyword.lower() in chunk_lower)
+                if matches > 0:
+                    relevant_indices.append((i, matches))
+                    print(f"✓ Chunk {i} 匹配了 {matches} 个关键词")
             
-            # 如果没有找到相关chunk，使用前几个chunk作为回退
-            if not relevant_indices:
+            # 按匹配度排序，取最相关的chunk
+            if relevant_indices:
+                relevant_indices.sort(key=lambda x: x[1], reverse=True)
+                relevant_indices = [idx for idx, _ in relevant_indices[:3]]  # 取前3个最相关的
+                print(f"找到相关chunk索引: {relevant_indices}")
+            else:
+                # 如果没有找到相关chunk，使用前几个chunk作为回退
                 print("未找到相关chunk，使用前3个chunk进行重译")
                 relevant_indices = list(range(min(3, len(chunks))))
             
