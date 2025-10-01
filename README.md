@@ -22,10 +22,19 @@ The api key is configured in `config.ini`.
 
 
 ## Run locally
-```
+```bash
 git clone https://github.com/open-atom-hust-club/LT.git
 cd LT
 pdm install
 python main.py --model qwen-plus --provider qwen translate tests/ldm.md -o tests/ldm_translated.md
 ```
+
+## Testing
+
+Run the translation test using PDM:
+```bash
+pdm test
+```
+
+This command will translate the test Markdown file `tests/ldm.md` to `tests/ldm_translated.md` using the qwen-plus model.
 
