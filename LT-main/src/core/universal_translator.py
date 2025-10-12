@@ -12,7 +12,9 @@ from .translator import SmartTranslator
 from .markdown_parser import Metadata
 from langchain.prompts import ChatPromptTemplate
 from .translator import TranslationOutputParser
-
+from .text_chunker import TextChunk
+from datetime import datetime
+import re as _re
 
 class UniversalTranslator:
     """通用文档翻译器 - 支持多种文档格式"""
@@ -171,7 +173,6 @@ class UniversalTranslator:
         translated_blocks: List[DocumentBlock] = []
         original_texts = []
         translated_texts = []
-        from .text_chunker import TextChunk
         
         for block in blocks:
             if block.translatable and block.content.strip():
@@ -320,7 +321,7 @@ class UniversalTranslator:
                 keywords_raw = reverse_chain.invoke({"missing": missing_content})
                 keywords = [k.strip() for k in keywords_raw.split(',') if k.strip()]
             except Exception:
-                import re as _re
+                # import re as _re
                 keywords = _re.findall(r'[A-Za-z][A-Za-z0-9_\-]+', missing_content)
             if not keywords:
                 return None
@@ -464,7 +465,6 @@ class UniversalTranslator:
         Returns:
             更新后的元数据
         """
-        from datetime import datetime
         
         updated = metadata.copy()
         
