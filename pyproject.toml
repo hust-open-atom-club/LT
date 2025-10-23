@@ -30,3 +30,4 @@ distribution = false
 
 [tool.pdm.scripts]
 test = "python main.py --model qwen-plus --provider qwen translate tests/ldm.md -o tests/ldm_translated.md"
+test-rst = "python main.py --model qwen-plus --provider qwen translate tests/w1-generic.rst -o tests/w1-generic_translated.rst"
