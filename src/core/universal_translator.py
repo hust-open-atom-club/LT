@@ -140,6 +140,9 @@ class UniversalTranslator:
         else:
             final_output = reconstructed_content
         
+        # 添加翻译署名
+        final_output = self._append_translation_signature(final_output, file_ext)
+        
         if output_file is None:
             output_file = str(file_path.parent / f"{file_path.stem}_translated{file_ext}")
         
@@ -363,13 +366,13 @@ class UniversalTranslator:
 1. 只改进提供的片段，不新增未提供原文的段落
 2. 保留 RST 结构（标题、列表缩进、行内反引号、下划线/星号格式等）
 3. 如果原译已正确可保持，但必须确保缺失信息被补足
-4. 输出时严格按输入 [SEG-x] 的顺序，仅给出改进后的中文译文正文
+4. 输出时严格按输入 [SEG-x] 的顺序，仅给出改进后的中文译文正文（不要输出 [SEG-x] 标识本身）
 5. 片段之间使用独立分隔符 <<<END>>>
 
 待改进片段：
 {segments}
 
-仅输出改进译文列表：
+仅输出改进译文列表（每个译文之间用 <<<END>>> 分隔，不包含任何标记）：
 """
             )
             re_chain = retranslate_prompt | self.translator.llm | TranslationOutputParser()
@@ -384,6 +387,14 @@ class UniversalTranslator:
                     improved_parts = fallback
             if len(improved_parts) != len(expanded):
                 return None
+            # 清理 LLM 返回中可能残留的 [SEG-x] 标识
+            import re as _re_seg
+            cleaned_parts = []
+            for part in improved_parts:
+                # 移除开头的 [SEG-x] 或类似标识
+                cleaned = _re_seg.sub(r'^\s*\[SEG-\d+\]\s*', '', part)
+                cleaned_parts.append(cleaned)
+            improved_parts = cleaned_parts
             # 6. 应用替换
             new_blocks = translated_blocks.copy()
             for part, bi in zip(improved_parts, expanded):
@@ -478,6 +489,24 @@ class UniversalTranslator:
             updated[date_key] = datetime.now().strftime("%Y%m%d")
         
         return updated
+    
+    def _append_translation_signature(self, content: str, file_ext: str) -> str:
+        """在文档末尾添加翻译署名
+        
+        Args:
+            content: 文档内容
+            file_ext: 文件扩展名（.md, .rst 等）
+            
+        Returns:
+            添加署名后的文档内容
+        """
+        signature = "\n\n由 Qwen-plus 及 LT agent 翻译"
+        
+        # RST 格式：可考虑加分隔符
+        if file_ext in ['.rst', '.rest']:
+            signature = "\n\n" + "=" * 50 + "\n\n由 Qwen-plus 及 LT agent 翻译"
+        
+        return content + signature
     
     def _save_translation_stats(self, stats: Dict, stats_file: str):
         """保存翻译统计信息"""
