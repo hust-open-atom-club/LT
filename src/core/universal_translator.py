@@ -15,6 +15,7 @@ from .translator import TranslationOutputParser
 from .text_chunker import TextChunk
 from datetime import datetime
 import re as _re
+import re as _re_seg
 
 class UniversalTranslator:
     """通用文档翻译器 - 支持多种文档格式"""
@@ -388,7 +389,6 @@ class UniversalTranslator:
             if len(improved_parts) != len(expanded):
                 return None
             # 清理 LLM 返回中可能残留的 [SEG-x] 标识
-            import re as _re_seg
             cleaned_parts = []
             for part in improved_parts:
                 # 移除开头的 [SEG-x] 或类似标识
