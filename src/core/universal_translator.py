@@ -503,7 +503,7 @@ class UniversalTranslator:
         signature = "\n\n由 Qwen-plus 及 LT agent 翻译"
         
         # RST 格式：可考虑加分隔符
-        if file_ext in ['.rst', '.rest']:
+        if file_ext in ['.rst']:
             signature = "\n\n" + "=" * 50 + "\n\n由 Qwen-plus 及 LT agent 翻译"
         
         return content + signature
