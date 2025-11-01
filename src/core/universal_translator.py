@@ -116,7 +116,7 @@ class UniversalTranslator:
         print(f"可翻译块: {translatable_count}/{len(blocks)}")
         
         # 针对 RST 采用逐块翻译，避免整篇合并造成结构破坏
-        if file_ext in ['.rst', '.rest']:
+        if file_ext in ['.rst']:
             print("使用逐块翻译模式 (RST)")
             translated_blocks, stats = self._translate_blocks_individually(blocks)
         else:
@@ -575,3 +575,4 @@ class UniversalTranslator:
         ]
         
         return '\n'.join(lines)
+
