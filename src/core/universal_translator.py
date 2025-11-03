@@ -15,7 +15,6 @@ from .translator import TranslationOutputParser
 from .text_chunker import TextChunk
 from datetime import datetime
 import re as _re
-import re as _re_seg
 
 class UniversalTranslator:
     """通用文档翻译器 - 支持多种文档格式"""
@@ -392,7 +391,7 @@ class UniversalTranslator:
             cleaned_parts = []
             for part in improved_parts:
                 # 移除开头的 [SEG-x] 或类似标识
-                cleaned = _re_seg.sub(r'^\s*\[SEG-\d+\]\s*', '', part)
+                cleaned = _re.sub(r'^\s*\[SEG-\d+\]\s*', '', part)
                 cleaned_parts.append(cleaned)
             improved_parts = cleaned_parts
             # 6. 应用替换
