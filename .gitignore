@@ -164,3 +164,7 @@ cython_debug/
 #.idea/
 
 translations/*
+
+# .vscode
+# Using vscode to debug python project will generate some config files in .vscode folder
+.vscode/
