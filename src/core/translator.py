@@ -3,8 +3,16 @@
 """
 
 from typing import List, Dict, Tuple
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import BaseOutputParser
+# 兼容性导入：同时支持 LangChain 新版 (v0.1+) 和旧版
+try:
+    # 尝试新版路径 (langchain-core)
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import BaseOutputParser
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+    # BaseOutputParser 在旧版中通常位于 schema 模块
+    from langchain.schema import BaseOutputParser
+
 from tqdm import tqdm
 import re
 import os
