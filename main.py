@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.core.translation_agent import TranslationAgent
+from src.core.universal_translator import UniversalTranslator
+from src.core.document_processor import ProcessorFactory
 
 
 def setup_environment():
@@ -33,11 +35,15 @@ def setup_environment():
 
 
 def translate_single_file(args):
-    """翻译单个文件"""
+    """翻译单个文件（支持多种格式）"""
     print(f"启动翻译代理")
     print(f"输入文件: {args.input}")
     
-    agent = TranslationAgent(
+    # 检查文件扩展名，选择合适的翻译器
+    file_ext = Path(args.input).suffix.lower()
+    
+    # 使用通用翻译器（支持 .md, .rst 等）
+    translator = UniversalTranslator(
         model_name=args.model,
         translator_id=args.translator,
         max_tokens=args.max_tokens,
@@ -48,14 +54,13 @@ def translate_single_file(args):
     )
     
     try:
-
-        stats = agent.translate_file(
+        stats = translator.translate_file(
             input_file=args.input,
             output_file=args.output,
             save_stats=True
         )
     
-        report = agent.get_translation_report(stats)
+        report = translator.get_translation_report(stats)
         print(report)
         
         print(f"翻译完成")
@@ -66,12 +71,13 @@ def translate_single_file(args):
 
 
 def translate_batch(args):
-    """批量翻译"""
+    """批量翻译（支持多种格式）"""
     print(f"批量翻译")
     print(f"输入目录: {args.input}")
     print(f"输出目录: {args.output}")
     
-    agent = TranslationAgent(
+    # 使用通用翻译器
+    translator = UniversalTranslator(
         model_name=args.model,
         translator_id=args.translator,
         max_tokens=args.max_tokens,
@@ -82,8 +88,7 @@ def translate_batch(args):
     )
     
     try:
-
-        results = agent.batch_translate(
+        results = translator.batch_translate(
             input_dir=args.input,
             output_dir=args.output,
             file_pattern=args.pattern
@@ -136,14 +141,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 翻译单个文件
+  # 翻译单个 Markdown 文件
   python main.py translate input.md -o output.md
   
-  # 批量翻译
+  # 翻译单个 RST 文件
+  python main.py translate input.rst -o output.rst
+  
+  # 批量翻译（支持 .md, .rst 等格式）
   python main.py batch input_dir output_dir
   
   # 验证翻译质量
   python main.py validate original.md translated.md
+  
+支持的文件格式:
+  - Markdown (.md, .markdown)
+  - reStructuredText (.rst, .rest)
   
 环境配置:
   请复制.env.example为.env并配置您的OpenAI API密钥
@@ -193,14 +205,14 @@ def main():
     
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
     
-    translate_parser = subparsers.add_parser('translate', help='翻译单个Markdown文件')
-    translate_parser.add_argument('input', help='输入的Markdown文件路径')
+    translate_parser = subparsers.add_parser('translate', help='翻译单个文件（支持 .md, .rst 等格式）')
+    translate_parser.add_argument('input', help='输入文件路径')
     translate_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
     
-    batch_parser = subparsers.add_parser('batch', help='批量翻译Markdown文件')
+    batch_parser = subparsers.add_parser('batch', help='批量翻译文件（支持多种格式）')
     batch_parser.add_argument('input', help='输入目录路径')
     batch_parser.add_argument('output', help='输出目录路径')
-    batch_parser.add_argument('--pattern', default='*.md', help='文件匹配模式 (默认: *.md)')
+    batch_parser.add_argument('--pattern', default='*.*', help='文件匹配模式 (默认: *.*，支持所有格式)')
  
     validate_parser = subparsers.add_parser('validate', help='验证翻译质量')
     validate_parser.add_argument('original', help='原始文件路径')
