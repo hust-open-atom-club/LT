@@ -168,3 +168,6 @@ translations/*
 # .vscode
 # Using vscode to debug python project will generate some config files in .vscode folder
 .vscode/
+
+# config.ini using config.ini locally
+config.ini
