@@ -7,10 +7,19 @@ from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 import json
 
+from regex import P
+
 from .document_processor import ProcessorFactory, DocumentProcessor, DocumentBlock
 from .translator import SmartTranslator
 from .markdown_parser import Metadata
-from langchain.prompts import ChatPromptTemplate
+from .prompt_manager import PromptManager
+# 兼容性导入
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import BaseOutputParser
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+    from langchain.schema import BaseOutputParser
 from .translator import TranslationOutputParser
 from .text_chunker import TextChunk
 from datetime import datetime
@@ -64,6 +73,7 @@ class UniversalTranslator:
             openai_base_url=openai_base_url,
             qwen_api_key=qwen_api_key
         )
+        self.prompt_manager = PromptManager()
     
     def translate_file(self,
                       input_file: str,
@@ -109,17 +119,29 @@ class UniversalTranslator:
         if metadata_dict:
             print(f"检测到元数据: {list(metadata_dict.keys())}")
 
-        blocks = processor.parse(content_without_metadata)
-        print(f"文档已解析为 {len(blocks)} 个块")
-
-        translatable_count = sum(1 for b in blocks if b.translatable)
-        print(f"可翻译块: {translatable_count}/{len(blocks)}")
-        
-        # 针对 RST 采用逐块翻译，避免整篇合并造成结构破坏
+        # # 针对 RST 采用逐块翻译，避免整篇合并造成结构破坏
+        # if file_ext in ['.rst']:
+        #     print("使用逐块翻译模式 (RST)")
+        #     translated_blocks, stats = self._translate_blocks_individually(blocks)
+        # ---------------------------------------------------------------------
+        # 分支 A: RST 格式 (启用 "Whole Document Strategy")
+        # ---------------------------------------------------------------------
         if file_ext in ['.rst']:
-            print("使用逐块翻译模式 (RST)")
-            translated_blocks, stats = self._translate_blocks_individually(blocks)
+            print("检测到 RST 格式，启用大上下文全量翻译模式 (Kernel-RST Mode)")
+
+            # 直接调用全量翻译方法
+            final_translated_content, stats = self._translate_rst_whole_doc_strategy(
+                content_without_metadata
+            )
+            reconstructed_content = final_translated_content
+            # 注意：全量翻译模式下，我们直接得到了最终的 RST 文本
+            # 不需要再调用 processor.reconstruct，也不需要 update_blocks
         else:
+            blocks = processor.parse(content_without_metadata)
+            print(f"文档已解析为 {len(blocks)} 个块")
+
+            translatable_count = sum(1 for b in blocks if b.translatable)
+            print(f"可翻译块: {translatable_count}/{len(blocks)}")
             # 提取可翻译内容 (md等)
             translatable_content = processor.get_translatable_content(blocks)
             # 翻译内容
@@ -298,7 +320,59 @@ class UniversalTranslator:
             else:
                 updated_blocks.append(block)
         return updated_blocks
+    def _translate_rst_whole_doc_strategy(self, content: str) -> Tuple[str, Dict]:
+        """
+        [新增] RST 全量翻译策略
+        彻底绕过原子化切分，使用定制 Prompt + 大窗口直接翻译
+        """
+        print(">>> 正在加载 Kernel-RST 专用 Prompt...")
 
+        try:
+            # 1. 获取专用 Prompt
+            # 确保你的 prompts/ 文件夹下有 kernel_rst.txt
+            rst_prompt_template = self.prompt_manager.get_prompt("kernel_rst")
+        except Exception as e:
+            print(f"Warning: 加载 kernel_rst 模板失败 ({e})，回退到默认模板")
+            rst_prompt_template = ChatPromptTemplate.from_template("{content}")
+
+        # 2. 构建 Chain
+        # 我们直接使用 self.translator.llm，这是已经初始化好的 LLM 对象 (OpenAI/Qwen)
+        chain = (
+            rst_prompt_template
+            | self.translator.llm
+            | TranslationOutputParser()
+        )
+
+        print(f">>> 正在向 LLM 发送全文 ({len(content)} 字符)...")
+
+        # 3. 调用 LLM
+        # 这里假设 content 没有超过 LLM 的最大上下文 (Qwen-Plus 可达 1M token)
+        # 如果未来确实遇到超大文件，可以在这里加一层简单的按 50k token 切分的逻辑
+        try:
+            translated_text = chain.invoke({"content": content})
+
+            if not translated_text or not translated_text.strip():
+                raise ValueError("LLM 返回了空内容")
+
+        except Exception as e:
+            raise RuntimeError(f"全量翻译失败: {e}") from e
+
+
+        # 4. 生成统计信息 (可选)
+        print(">>> 翻译完成，正在生成摘要和完整性检查...")
+        original_summary = self.translator.summary_generator.generate_original_summary(content)
+        translated_summary = self.translator.summary_generator.generate_translated_summary(translated_text)
+        comparison = self.translator.summary_generator.compare_summaries(original_summary, translated_summary)
+
+        stats = {
+            "strategy": "whole_doc_rst",
+            "original_summary": original_summary,
+            "translated_summary": translated_summary,
+            "comparison_result": comparison,
+            "completeness_score": comparison.get("completeness_score", 0)
+        }
+
+        return translated_text, stats
     def _attempt_retranslation_rst(self,
                                    original_blocks: List[DocumentBlock],
                                    translated_blocks: List[DocumentBlock],
