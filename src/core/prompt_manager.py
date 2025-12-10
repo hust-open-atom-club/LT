@@ -21,7 +21,7 @@ class PromptManager:
         # 如果未指定路径，默认使用当前文件同级目录下的 'prompts' 文件夹
         if prompts_dir is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            self.prompts_dir = os.path.join("../..", current_dir, "prompts")
+            self.prompts_dir = os.path.join(current_dir, "../..", "prompts")
         else:
             self.prompts_dir = prompts_dir
 
