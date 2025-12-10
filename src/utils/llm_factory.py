@@ -6,7 +6,11 @@ import os
 import json
 from typing import Optional, Any, List, Dict, Union
 from langchain_openai import ChatOpenAI
-from langchain.llms.base import LLM
+# 兼容性代码:
+try:
+    from langchain_core.language_models.llms import LLM
+except ImportError:
+    from langchain.llms.base import LLM
 from pydantic import Field
 
 from .config import config_manager

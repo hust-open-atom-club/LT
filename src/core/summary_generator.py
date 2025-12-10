@@ -4,9 +4,18 @@
 """
 
 from typing import List
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import BaseOutputParser
-from langchain.schema.runnable import RunnablePassthrough
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+try:
+    from langchain_core.output_parsers import BaseOutputParser
+except ImportError:
+    from langchain.schema import BaseOutputParser
+try:
+    from langchain_core.runnables import RunnablePassthrough
+except ImportError:
+    from langchain.schema.runnable import RunnablePassthrough
 import os
 import re
 from .text_chunker import TextChunk
