@@ -3,6 +3,7 @@
 """
 
 import os
+import shlex
 import sys
 import argparse
 from pathlib import Path
@@ -62,9 +63,9 @@ def translate_single_file(args):
     
         report = translator.get_translation_report(stats)
         print(report)
-        
+    
         print(f"翻译完成")
-        
+    
     except Exception as e:
         print(f"翻译过程中发生错误: {e}")
         sys.exit(1)
@@ -93,16 +94,16 @@ def translate_batch(args):
             output_dir=args.output,
             file_pattern=args.pattern
         )
-        
+    
         successful = sum(1 for r in results if 'error' not in r)
         total = len(results)
         avg_score = sum(r.get('completeness_score', 0) for r in results if 'error' not in r)
         avg_score = avg_score / successful if successful > 0 else 0
-        
+    
         print(f"\n批量翻译完成:")
         print(f"   成功: {successful}/{total} 个文件")
         print(f"   平均完整性评分: {avg_score:.1f}/10")
-        
+    
     except Exception as e:
         print(f"批量翻译过程中发生错误: {e}")
         sys.exit(1)
@@ -114,7 +115,7 @@ def validate_translation(args):
     
     # 翻译代理
     agent = TranslationAgent(
-        translator_id=args.translator, 
+        translator_id=args.translator,
         provider=args.provider,
         openai_api_key=getattr(args, 'openai_api_key', None),
         openai_base_url=getattr(args, 'openai_base_url', None),
@@ -123,12 +124,12 @@ def validate_translation(args):
     
     try:
         result = agent.validate_translation(args.original, args.translated)
-        
+    
         print(f"\n翻译质量报告:")
         print(f"   质量评分: {result['validation_score']}/10")
         print(f"   遗漏内容: {result['comparison_result'].get('missing_content', '无')}")
         print(f"   改进建议: {result['comparison_result'].get('suggestions', '无')}")
-        
+    
     except Exception as e:
         print(f"验证过程中发生错误: {e}")
         sys.exit(1)
@@ -163,7 +164,7 @@ def main():
     )
     
     parser.add_argument(
-        '--model', 
+        '--model',
         default='gpt-3.5-turbo',
         help='使用的模型名称 (默认: gpt-3.5-turbo)'
     )
@@ -213,13 +214,19 @@ def main():
     batch_parser.add_argument('input', help='输入目录路径')
     batch_parser.add_argument('output', help='输出目录路径')
     batch_parser.add_argument('--pattern', default='*.*', help='文件匹配模式 (默认: *.*，支持所有格式)')
- 
+    
     validate_parser = subparsers.add_parser('validate', help='验证翻译质量')
     validate_parser.add_argument('original', help='原始文件路径')
     validate_parser.add_argument('translated', help='翻译文件路径')
     
-    args = parser.parse_args()
-    
+    raw = sys.argv[1:]
+
+    # 如果只收到一个参数，而且里面有空格，认为是 VSCode 传进来的“整行命令”,方便vscode调试
+    if len(raw) == 1 and " " in raw[0]:
+        raw = shlex.split(raw[0])
+
+    args = parser.parse_args(raw)
+
     if not args.command:
         parser.print_help()
         return
