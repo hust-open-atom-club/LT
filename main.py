@@ -40,9 +40,6 @@ def translate_single_file(args):
     print(f"启动翻译代理")
     print(f"输入文件: {args.input}")
     
-    # 检查文件扩展名，选择合适的翻译器
-    file_ext = Path(args.input).suffix.lower()
-    
     # 使用通用翻译器（支持 .md, .rst 等）
     translator = UniversalTranslator(
         model_name=args.model,
