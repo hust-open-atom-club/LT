@@ -6,7 +6,9 @@ import os
 import shlex
 import sys
 import argparse
+import glob
 from pathlib import Path
+from typing import List,Optional
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -35,46 +37,93 @@ def setup_environment():
         print(f"已找到配置文件: {config_file}")
 
 
-def translate_single_file(args):
-    """翻译单个文件（支持多种格式）"""
-    print(f"启动翻译代理")
-    print(f"输入文件: {args.input}")
-    
-    # 使用通用翻译器（支持 .md, .rst 等）
-    translator = UniversalTranslator(
-        model_name=args.model,
-        translator_id=args.translator,
-        max_tokens=args.max_tokens,
-        provider=args.provider,
-        openai_api_key=getattr(args, 'openai_api_key', None),
-        openai_base_url=getattr(args, 'openai_base_url', None),
-        qwen_api_key=getattr(args, 'qwen_api_key', None)
-    )
-    
-    try:
-        stats = translator.translate_file(
-            input_file=args.input,
-            output_file=args.output,
-            save_stats=True
-        )
-    
-        report = translator.get_translation_report(stats)
-        print(report)
-    
-        print(f"翻译完成")
-    
-    except Exception as e:
-        print(f"翻译过程中发生错误: {e}")
+def parse_input_paths(raw_inputs: List[str]) -> List[Path]:
+    """解析输入路径并校验存在性，支持通配符"""
+    resolved: List[Path] = []
+    for raw in raw_inputs:
+        expanded = [Path(p) for p in glob.glob(raw)]
+        if expanded:
+            resolved.extend(expanded)
+            continue
+
+        path = Path(raw)
+        if path.exists():
+            resolved.append(path)
+        else:
+            print(f"输入路径不存在或未匹配任何文件: {raw}")
+            sys.exit(1)
+
+    if not resolved:
+        print("未解析到任何输入文件，请检查路径或通配符")
         sys.exit(1)
 
+    unique_paths: List[Path] = []
+    seen = set()
+    for path in resolved:
+        resolved_path = path.resolve()
+        if not resolved_path.is_file():
+            print(f"路径不是文件或无法读取: {resolved_path}")
+            sys.exit(1)
+        key = str(resolved_path)
+        if key not in seen:
+            seen.add(key)
+            unique_paths.append(resolved_path)
 
-def translate_batch(args):
-    """批量翻译（支持多种格式）"""
-    print(f"批量翻译")
-    print(f"输入目录: {args.input}")
-    print(f"输出目录: {args.output}")
+    return unique_paths
+
+def calculate_output_path(input_path: Path, output_arg: Optional[str], is_batch: bool) -> Path:
+    """
+    智能计算输出路径
     
-    # 使用通用翻译器
+    Args:
+        input_path: 输入文件路径
+        output_arg: 命令行传入的 -o 参数
+        is_batch: 是否为批量处理模式（多个输入文件）
+    """
+    suffix = f"_translated{input_path.suffix}"
+
+    if not output_arg:
+        default_dir = input_path.parent / "translations"
+        
+        if not default_dir.exists():
+            default_dir.mkdir(parents=True, exist_ok=True)
+            
+        return default_dir / f"{input_path.stem}{suffix}"
+    
+    output_path = Path(output_arg)
+
+    if is_batch:
+        if not output_path.exists():
+            output_path.mkdir(parents=True, exist_ok=True)
+        elif output_path.is_file():
+            print(f"错误: 批量翻译时，输出路径 '{output_arg}' 不能是文件，必须是目录或留空。")
+            sys.exit(1)
+        
+        return output_path / f"{input_path.stem}{suffix}"
+
+    # 情况3: 单文件模式
+    else:
+        # 如果 output_arg 看起来像目录 (以路径分隔符结尾，或者已存在且是目录)
+        if output_arg.endswith(os.sep) or (output_path.exists() and output_path.is_dir()):
+            output_path.mkdir(parents=True, exist_ok=True)
+            return output_path / f"{input_path.stem}{suffix}"
+
+        # 否则视为具体的文件路径
+        # 确保父目录存在
+        if not output_path.parent.exists():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        return output_path
+
+def run_translation_task(args):
+    """统一的翻译任务执行入口"""
+    # 1. 解析所有输入路径
+    input_paths = parse_input_paths(args.inputs)
+    is_batch = len(input_paths) > 1
+    
+    print(f"启动翻译任务")
+    print(f"待处理文件数: {len(input_paths)}")
+    
+    # 初始化翻译器
     translator = UniversalTranslator(
         model_name=args.model,
         translator_id=args.translator,
@@ -85,27 +134,69 @@ def translate_batch(args):
         qwen_api_key=getattr(args, 'qwen_api_key', None)
     )
     
-    try:
-        results = translator.batch_translate(
-            input_dir=args.input,
-            output_dir=args.output,
-            file_pattern=args.pattern
-        )
+    results = []
     
+    # 2. 统一循环逻辑
+    for i, input_path in enumerate(input_paths):
+        print(f"\n[{i+1}/{len(input_paths)}] 处理: {input_path.name}")
+        
+        try:
+            # 计算当前文件的输出路径
+            output_path = calculate_output_path(input_path, args.output, is_batch)
+            
+            # 调用翻译器 (write_to_disk=True 因为是CLI模式)
+            stats = translator.translate_file(
+                input_file=str(input_path),
+                output_file=str(output_path),
+                save_stats=True,
+                write_to_disk=True
+            )
+            
+            # 终端模式下打印报告
+            report_text = translator.get_translation_report(stats)
+            print(report_text)
+            results.append(stats)
+            
+        except Exception as e:
+            print(f"   -> 失败: {e}")
+            results.append({
+                "input_file": str(input_path),
+                "error": str(e)
+            })
+            # 如果不是批量模式，且出错，直接退出
+            if not is_batch:
+                sys.exit(1)
+
+    # 3. 批量模式下的汇总报告
+    if is_batch and results:
         successful = sum(1 for r in results if 'error' not in r)
         total = len(results)
-        avg_score = sum(r.get('completeness_score', 0) for r in results if 'error' not in r)
-        avg_score = avg_score / successful if successful > 0 else 0
-    
-        print(f"\n批量翻译完成:")
-        print(f"   成功: {successful}/{total} 个文件")
-        print(f"   平均完整性评分: {avg_score:.1f}/10")
-    
-    except Exception as e:
-        print(f"批量翻译过程中发生错误: {e}")
-        sys.exit(1)
 
+        # 计算平均分
+        valid_scores = [r.get('completeness_score', 0) for r in results if 'error' not in r]
+        avg_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0
 
+        print(f"\n{'='*30}")
+        print(f"任务完成汇总")
+        print(f"成功: {successful}/{total}")
+        print(f"平均完整性评分: {avg_score:.1f}/10")
+
+        # 如果指定了输出目录，可以在那里生成一个总的 json 报告
+        if args.output and os.path.isdir(args.output):
+            report_path = Path(args.output) / "batch_report.json"
+            import json
+            with open(report_path, 'w', encoding='utf-8') as f:
+                # 剔除内容过大的字段以免报告文件太大
+                clean_results = []
+                for r in results:
+                    r_copy = r.copy()
+                    r_copy.pop('translated_content', None) # 报告里不需要全文
+                    r_copy.pop('original_summary', None)
+                    r_copy.pop('translated_summary', None)
+                    clean_results.append(r_copy)
+                json.dump(clean_results, f, ensure_ascii=False, indent=2)
+            print(f"汇总报告已生成: {report_path}")
+            
 def validate_translation(args):
     """验证翻译质量"""
     print(f"验证翻译质量")
@@ -124,8 +215,8 @@ def validate_translation(args):
     
         print(f"\n翻译质量报告:")
         print(f"   质量评分: {result['validation_score']}/10")
-        print(f"   遗漏内容: {result['comparison_result'].get('missing_content', '无')}")
-        print(f"   改进建议: {result['comparison_result'].get('suggestions', '无')}")
+        print(f"   遗漏内容: {result['comparison_result'].get('missing_content', '无')}" )
+        print(f"   改进建议: {result['comparison_result'].get('suggestions', '无')}" )
     
     except Exception as e:
         print(f"验证过程中发生错误: {e}")
@@ -145,8 +236,8 @@ def main():
   # 翻译单个 RST 文件
   python main.py translate input.rst -o output.rst
   
-  # 批量翻译（支持 .md, .rst 等格式）
-  python main.py batch input_dir output_dir
+  # 翻译多个文件或使用通配符
+  python main.py translate docs/*.md
   
   # 验证翻译质量
   python main.py validate original.md translated.md
@@ -203,19 +294,22 @@ def main():
     
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
     
-    translate_parser = subparsers.add_parser('translate', help='翻译单个文件（支持 .md, .rst 等格式）')
-    translate_parser.add_argument('input', help='输入文件路径')
-    translate_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
-    
-    batch_parser = subparsers.add_parser('batch', help='批量翻译文件（支持多种格式）')
-    batch_parser.add_argument('input', help='输入目录路径')
-    batch_parser.add_argument('output', help='输出目录路径')
-    batch_parser.add_argument('--pattern', default='*.*', help='文件匹配模式 (默认: *.*，支持所有格式)')
-    
-    validate_parser = subparsers.add_parser('validate', help='验证翻译质量')
+    translate_parser = subparsers.add_parser(
+        'translate', 
+        aliases=['t'], 
+        help='翻译文件（支持通配符和多文件）'
+    )
+    translate_parser.add_argument('inputs', nargs='+', help='输入文件路径（可包含通配符）')
+    translate_parser.add_argument('-o', '--output', help='输出文件路径（单文件）或输出目录（多文件）')
+
+    validate_parser = subparsers.add_parser(
+        'validate', 
+        aliases=['v'], 
+        help='验证翻译质量'
+    )
     validate_parser.add_argument('original', help='原始文件路径')
     validate_parser.add_argument('translated', help='翻译文件路径')
-    
+
     raw = sys.argv[1:]
 
     # 如果只收到一个参数，而且里面有空格，认为是 VSCode 传进来的“整行命令”,方便vscode调试
@@ -229,14 +323,11 @@ def main():
         return
     
     setup_environment()
-    
-    if args.command == 'translate':
-        translate_single_file(args)
-    elif args.command == 'batch':
-        translate_batch(args)
-    elif args.command == 'validate':
-        validate_translation(args)
 
+    if args.command in ['translate', 't']:
+        run_translation_task(args)
+    elif args.command == ['validate', 'v']:
+        validate_translation(args)
 
 if __name__ == "__main__":
     main()
