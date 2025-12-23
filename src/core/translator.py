@@ -3,8 +3,16 @@
 """
 
 from typing import List, Dict, Tuple
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import BaseOutputParser
+# 兼容性导入：同时支持 LangChain 新版 (v0.1+) 和旧版
+try:
+    # 尝试新版路径 (langchain-core)
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import BaseOutputParser
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+    # BaseOutputParser 在旧版中通常位于 schema 模块
+    from langchain.schema import BaseOutputParser
+
 from tqdm import tqdm
 import re
 import os
@@ -17,7 +25,7 @@ from ..utils.llm_factory import LLMFactory
 
 class TranslationOutputParser(BaseOutputParser):
     """翻译输出解析"""
-    
+
     def parse(self, text) -> str:
         if hasattr(text, 'content'):
             return text.content.strip()
@@ -29,8 +37,8 @@ class TranslationOutputParser(BaseOutputParser):
 
 class SmartTranslator:
     """翻译"""
-    
-    def __init__(self, model_name: str = "gpt-3.5-turbo", temperature: float = 0.1, provider: str = None, 
+
+    def __init__(self, model_name: str = "gpt-3.5-turbo", temperature: float = 0.1, provider: str = None,
                  openai_api_key: str = None, openai_base_url: str = None, qwen_api_key: str = None):
 
         # 使用LLM_factory创建模型实例
@@ -43,13 +51,13 @@ class SmartTranslator:
             qwen_api_key=qwen_api_key
         )
         self.model_name = model_name
-        
+
         self.chunker = MarkdownChunker(max_tokens=800, model=model_name)
         self.summary_generator = SummaryGenerator(
             model_name, temperature=0.2, provider=provider,
             openai_api_key=openai_api_key, openai_base_url=openai_base_url, qwen_api_key=qwen_api_key
         )
-        
+
         # 翻译prompt模板
         self.translation_template = ChatPromptTemplate.from_template(
             """你是一个专业的英译汉翻译专家，具有深厚的语言功底和跨文化理解能力。
@@ -68,7 +76,7 @@ class SmartTranslator:
 
 翻译结果："""
         )
-        
+
         # 重新翻译prompt模板（用于处理遗漏内容）
         self.retranslation_template = ChatPromptTemplate.from_template(
             """你是一个专业的英译汉翻译专家。现在需要你重新翻译以下内容，特别注意包含所有重要信息。
@@ -87,20 +95,20 @@ class SmartTranslator:
 
 只输出翻译结果："""
         )
-        
+
         # 创建处理链
         self.translation_chain = (
-            self.translation_template 
-            | self.llm 
+            self.translation_template
+            | self.llm
             | TranslationOutputParser()
         )
-        
+
         self.retranslation_chain = (
-            self.retranslation_template 
-            | self.llm 
+            self.retranslation_template
+            | self.llm
             | TranslationOutputParser()
         )
-    
+
     def translate_chunk(self, chunk: TextChunk) -> str:
         """
         翻译单个文本块
@@ -109,24 +117,24 @@ class SmartTranslator:
             if chunk.chunk_type == 'code':
                 # 代码块特殊处理 - 只翻译注释
                 return self._translate_code_block(chunk.content)
-            
+
             translation = self.translation_chain.invoke({
                 "content": chunk.content
             })
-            
+
             return translation
-            
+
         except Exception as e:
             print(f"翻译文本块时出错: {e}")
             return f"翻译失败: {chunk.content}"
-    
+
     def _translate_code_block(self, code_content: str) -> str:
         """
         翻译代码块，只翻译注释部分
         """
         lines = code_content.split('\n')
         translated_lines = []
-        
+
         for line in lines:
             # 如果是注释行，进行翻译
             if line.strip().startswith('#') or line.strip().startswith('//'):
@@ -141,9 +149,9 @@ class SmartTranslator:
                     translated_lines.append(line)
             else:
                 translated_lines.append(line)
-        
+
         return '\n'.join(translated_lines)
-    
+
     def translate_content(self, content: str) -> Tuple[str, Dict]:
         """
         翻译完整内容
@@ -156,10 +164,10 @@ class SmartTranslator:
         print("正在分割文本")
         chunks = self.chunker.chunk_text(content)
         print(f"文本已分割为 {len(chunks)} 个块")
-        
+
         print("正在翻译各个文本块")
         translated_chunks = []
-        
+
         for i, chunk in enumerate(tqdm(chunks, desc="翻译进度")):
             translated_content = self.translate_chunk(chunk)
             translated_chunks.append(translated_content)
@@ -173,33 +181,33 @@ class SmartTranslator:
         comparison_result = self.summary_generator.compare_summaries(
             original_summary, translated_summary
         )
-        
+
         # 修改重译条件：只要有遗漏内容或评分低于8分，就触发重译
-        has_missing_content = (comparison_result["missing_content"] and 
-                              comparison_result["missing_content"].strip() and 
+        has_missing_content = (comparison_result["missing_content"] and
+                              comparison_result["missing_content"].strip() and
                               comparison_result["missing_content"] != "无")
-        
+
         if comparison_result["completeness_score"] < 8 or has_missing_content:
             print(f"检测到翻译需要改进，完整性评分: {comparison_result['completeness_score']}/10")
             if has_missing_content:
                 print(f"遗漏内容: {comparison_result['missing_content']}")
             print("正在重新翻译")
-            
+
             retranslated_content = self._retranslate_with_focus(
-                content, comparison_result["missing_content"], 
+                content, comparison_result["missing_content"],
                 chunks=chunks, translated_chunks=translated_chunks
             )
-            
+
             if retranslated_content:
                 translated_content = retranslated_content
 
                 translated_summary = self.summary_generator.generate_translated_summary(translated_content)
-                
+
                 comparison_result = self.summary_generator.compare_summaries(
                     original_summary, translated_summary
                 )
                 print(f"重新翻译后的完整性评分: {comparison_result['completeness_score']}/10")
-        
+
         stats = {
             "original_summary": original_summary,
             "translated_summary": translated_summary,
@@ -207,17 +215,17 @@ class SmartTranslator:
             "chunk_count": len(chunks),
             "completeness_score": comparison_result["completeness_score"]
         }
-        
+
         return translated_content, stats
-    
+
     def _merge_translated_chunks(self, translated_chunks: List[str]) -> str:
         """
         合并文本块
         """
         # 简单合并，用双换行分隔
         return '\n\n'.join(chunk.strip() for chunk in translated_chunks if chunk.strip())
-    
-    def _retranslate_with_focus(self, original_content: str, missing_content: str, 
+
+    def _retranslate_with_focus(self, original_content: str, missing_content: str,
                                 chunks: List[TextChunk] = None, translated_chunks: List[str] = None) -> str:
         """
         定向重新翻译缺失内容：
@@ -233,7 +241,7 @@ class SmartTranslator:
                 chunks = self.chunker.chunk_text(original_content)
             if translated_chunks is None:
                 return None
-            
+
             # 步骤1: 将中文遗漏内容描述翻译回英文关键词
             print("正在将遗漏内容描述转换为英文关键词...")
             reverse_translation_prompt = ChatPromptTemplate.from_template("""
@@ -245,9 +253,9 @@ class SmartTranslator:
 
 请提取出可能在英文原文中出现的关键词（如人名、术语、技术名词等）：
 """)
-            
+
             reverse_chain = reverse_translation_prompt | self.llm | TranslationOutputParser()
-            
+
             try:
                 english_keywords_str = reverse_chain.invoke({
                     "missing_content": missing_content
@@ -259,20 +267,20 @@ class SmartTranslator:
                 print(f"关键词提取失败，使用备用方案: {e}")
                 # 备用方案：提取已有的英文词汇
                 english_keywords = re.findall(r'[A-Za-z][A-Za-z0-9\-_\.@]+', missing_content)
-            
+
             # 步骤2: 在原文chunk中查找包含这些关键词的部分
             relevant_indices = []
-            
+
             print(f"在 {len(chunks)} 个chunk中搜索关键词...")
             for i, chunk in enumerate(chunks):
                 chunk_lower = chunk.content.lower()
-                
+
                 # 检查是否包含任何关键词
                 matches = sum(1 for keyword in english_keywords if keyword.lower() in chunk_lower)
                 if matches > 0:
                     relevant_indices.append((i, matches))
                     print(f"✓ Chunk {i} 匹配了 {matches} 个关键词")
-            
+
             # 按匹配度排序，取最相关的chunk
             if relevant_indices:
                 relevant_indices.sort(key=lambda x: x[1], reverse=True)
@@ -282,19 +290,19 @@ class SmartTranslator:
                 # 如果没有找到相关chunk，使用前几个chunk作为回退
                 print("未找到相关chunk，使用前3个chunk进行重译")
                 relevant_indices = list(range(min(3, len(chunks))))
-            
+
             # 扩展上下文窗口
             expanded_indices = set()
             context_window = 1  # 左右各1个chunk
-            
+
             for idx in relevant_indices:
                 start = max(0, idx - context_window)
                 end = min(len(chunks), idx + context_window + 1)
                 for i in range(start, end):
                     expanded_indices.add(i)
-            
+
             expanded_indices = sorted(list(expanded_indices))
-            
+
             # 提取需要重译的片段
             segments_to_retranslate = []
             for idx in expanded_indices:
@@ -302,15 +310,15 @@ class SmartTranslator:
                     'index': idx,
                     'content': chunks[idx].content
                 })
-            
+
             print(f"正在重新翻译 {len(segments_to_retranslate)} 个相关片段...")
-            
+
             # 构建重译的prompt
             segments_text = "\n\n---片段分隔---\n\n".join(
-                f"片段{i+1}:\n{seg['content']}" 
+                f"片段{i+1}:\n{seg['content']}"
                 for i, seg in enumerate(segments_to_retranslate)
             )
-            
+
             retranslation_prompt = ChatPromptTemplate.from_template("""
 你是专业的英译汉翻译专家。请重新翻译以下片段，特别注意包含这些缺失信息：{missing_content}
 
@@ -325,32 +333,32 @@ class SmartTranslator:
 
 只输出翻译结果：
 """)
-            
+
             retranslation_chain = retranslation_prompt | self.llm | TranslationOutputParser()
-            
+
             retranslated_text = retranslation_chain.invoke({
                 "missing_content": missing_content,
                 "segments": segments_text
             })
-            
+
             retranslated_segments = retranslated_text.split("---译文分隔---")
             # 如果分割数量不匹配，尝试按段落分割
             if len(retranslated_segments) != len(segments_to_retranslate):
                 retranslated_segments = [seg.strip() for seg in retranslated_text.split('\n\n') if seg.strip()]
-            
+
             updated_chunks = translated_chunks.copy()
             for i, seg_info in enumerate(segments_to_retranslate):
                 if i < len(retranslated_segments):
                     updated_chunks[seg_info['index']] = retranslated_segments[i].strip()
 
             return self._merge_translated_chunks(updated_chunks)
-            
+
         except Exception as e:
             print(f"定向重译时出错: {e}")
             try:
                 context_size = min(1000, len(original_content) // 4)  # 最多1/4内容作为上下文
                 limited_content = original_content[:context_size]
-                
+
                 retranslated = self.retranslation_chain.invoke({
                     "original_text": limited_content,
                     "missing_content": missing_content
@@ -359,7 +367,7 @@ class SmartTranslator:
             except Exception as e2:
                 print(f"回退重译也失败: {e2}")
                 return None
-    
+
     def translate_with_context(self, content: str, context: str = "") -> str:
         """
         带上下文的翻译
@@ -377,9 +385,9 @@ class SmartTranslator:
 
 翻译结果："""
             )
-            
+
             enhanced_chain = enhanced_prompt | self.llm | TranslationOutputParser()
-            
+
             try:
                 return enhanced_chain.invoke({
                     "content": content,

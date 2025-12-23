@@ -7,10 +7,19 @@ from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 import json
 
+from regex import P
+
 from .document_processor import ProcessorFactory, DocumentProcessor, DocumentBlock
 from .translator import SmartTranslator
 from .markdown_parser import Metadata
-from langchain.prompts import ChatPromptTemplate
+from .prompt_manager import PromptManager
+# 兼容性导入
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import BaseOutputParser
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+    from langchain.schema import BaseOutputParser
 from .translator import TranslationOutputParser
 from .text_chunker import TextChunk
 from datetime import datetime
@@ -64,21 +73,24 @@ class UniversalTranslator:
             openai_base_url=openai_base_url,
             qwen_api_key=qwen_api_key
         )
+        self.prompt_manager = PromptManager()
     
     def translate_file(self,
                       input_file: str,
                       output_file: Optional[str] = None,
-                      save_stats: bool = True) -> Dict:
+                      save_stats: bool = True,
+                      write_to_disk: bool = True) -> Dict:
         """
-        翻译文件（自动识别格式）
+        翻译文件
         
         Args:
             input_file: 输入文件路径
-            output_file: 输出文件路径（可选）
-            save_stats: 是否保存统计信息
+            output_file: 输出文件路径（可选，如果不传则自动生成）
+            save_stats: 是否保存统计信息到磁盘
+            write_to_disk: 是否将译文写入磁盘（GUI预览模式可设为False）
             
         Returns:
-            翻译统计信息
+            Dict: 包含翻译统计信息、原文、译文等完整数据
         """
         if not os.path.exists(input_file):
             raise FileNotFoundError(f"输入文件不存在: {input_file}")
@@ -109,17 +121,31 @@ class UniversalTranslator:
         if metadata_dict:
             print(f"检测到元数据: {list(metadata_dict.keys())}")
 
-        blocks = processor.parse(content_without_metadata)
-        print(f"文档已解析为 {len(blocks)} 个块")
-
-        translatable_count = sum(1 for b in blocks if b.translatable)
-        print(f"可翻译块: {translatable_count}/{len(blocks)}")
-        
-        # 针对 RST 采用逐块翻译，避免整篇合并造成结构破坏
+        # # 针对 RST 采用逐块翻译，避免整篇合并造成结构破坏
+        # if file_ext in ['.rst']:
+        #     print("使用逐块翻译模式 (RST)")
+        #     translated_blocks, stats = self._translate_blocks_individually(blocks)
+        # ---------------------------------------------------------------------
+        # 分支 A: RST 格式 (启用 "Whole Document Strategy")
+        # ---------------------------------------------------------------------
         if file_ext in ['.rst']:
-            print("使用逐块翻译模式 (RST)")
-            translated_blocks, stats = self._translate_blocks_individually(blocks)
+            print("检测到 RST 格式，启用大上下文全量翻译模式 (Kernel-RST Mode)")
+
+            # 直接调用全量翻译方法
+            final_translated_content, stats = self._translate_rst_whole_doc_strategy(
+                content_without_metadata
+            )
+            reconstructed_content = final_translated_content
+            blocks = None
+            translatable_count = None
+            # 注意：全量翻译模式下，我们直接得到了最终的 RST 文本
+            # 不需要再调用 processor.reconstruct，也不需要 update_blocks
         else:
+            blocks = processor.parse(content_without_metadata)
+            print(f"文档已解析为 {len(blocks)} 个块")
+
+            translatable_count = sum(1 for b in blocks if b.translatable)
+            print(f"可翻译块: {translatable_count}/{len(blocks)}")
             # 提取可翻译内容 (md等)
             translatable_content = processor.get_translatable_content(blocks)
             # 翻译内容
@@ -130,8 +156,8 @@ class UniversalTranslator:
                 blocks, translated_content, processor
             )
         
-        # 重构文档
-        reconstructed_content = processor.reconstruct(translated_blocks)
+            # 重构文档
+            reconstructed_content = processor.reconstruct(translated_blocks)
         
         # 更新元数据
         if metadata_dict:
@@ -151,18 +177,24 @@ class UniversalTranslator:
         
         print(f"翻译完成，输出文件: {output_file}")
         
-        # 统计信息
-        if save_stats:
-            stats_file = str(Path(output_file).with_suffix('.stats.json'))
-            self._save_translation_stats(stats, stats_file)
+        # 核心改动：由参数控制是否写入
+        if write_to_disk:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(final_output)
+            print(f"输出已保存: {output_file}")
+            
+            if save_stats:
+                stats_file = str(Path(output_file).with_suffix('.stats.json'))
+                self._save_translation_stats(stats, stats_file)
 
         stats.update({
-            "input_file": input_file,
-            "output_file": output_file,
+            "input_file": str(input_file),
+            "output_file": str(output_file),
             "translator_id": self.translator_id,
             "file_format": file_ext,
-            "total_blocks": len(blocks),
-            "translatable_blocks": translatable_count
+            "translated_content": final_output, # 返回完整译文，供内存预览
+            "total_blocks": len(blocks) if blocks is not None else 1, # 假设上下文中有 blocks
+            "translatable_blocks": translatable_count if translatable_count is not None else 1 # 假设上下文中有 count
         })
         
         return stats
@@ -298,7 +330,59 @@ class UniversalTranslator:
             else:
                 updated_blocks.append(block)
         return updated_blocks
+    def _translate_rst_whole_doc_strategy(self, content: str) -> Tuple[str, Dict]:
+        """
+        [新增] RST 全量翻译策略
+        彻底绕过原子化切分，使用定制 Prompt + 大窗口直接翻译
+        """
+        print(">>> 正在加载 Kernel-RST 专用 Prompt...")
 
+        try:
+            # 1. 获取专用 Prompt
+            # 确保你的 prompts/ 文件夹下有 kernel_rst.txt
+            rst_prompt_template = self.prompt_manager.get_prompt("kernel_rst")
+        except Exception as e:
+            print(f"Warning: 加载 kernel_rst 模板失败 ({e})，回退到默认模板")
+            rst_prompt_template = ChatPromptTemplate.from_template("{content}")
+
+        # 2. 构建 Chain
+        # 我们直接使用 self.translator.llm，这是已经初始化好的 LLM 对象 (OpenAI/Qwen)
+        chain = (
+            rst_prompt_template
+            | self.translator.llm
+            | TranslationOutputParser()
+        )
+
+        print(f">>> 正在向 LLM 发送全文 ({len(content)} 字符)...")
+
+        # 3. 调用 LLM
+        # 这里假设 content 没有超过 LLM 的最大上下文 (Qwen-Plus 可达 1M token)
+        # 如果未来确实遇到超大文件，可以在这里加一层简单的按 50k token 切分的逻辑
+        try:
+            translated_text = chain.invoke({"content": content})
+
+            if not translated_text or not translated_text.strip():
+                raise ValueError("LLM 返回了空内容")
+
+        except Exception as e:
+            raise RuntimeError(f"全量翻译失败: {e}") from e
+
+
+        # 4. 生成统计信息 (可选)
+        print(">>> 翻译完成，正在生成摘要和完整性检查...")
+        original_summary = self.translator.summary_generator.generate_original_summary(content)
+        translated_summary = self.translator.summary_generator.generate_translated_summary(translated_text)
+        comparison = self.translator.summary_generator.compare_summaries(original_summary, translated_summary)
+
+        stats = {
+            "strategy": "whole_doc_rst",
+            "original_summary": original_summary,
+            "translated_summary": translated_summary,
+            "comparison_result": comparison,
+            "completeness_score": comparison.get("completeness_score", 0)
+        }
+
+        return translated_text, stats
     def _attempt_retranslation_rst(self,
                                    original_blocks: List[DocumentBlock],
                                    translated_blocks: List[DocumentBlock],
@@ -512,67 +596,6 @@ class UniversalTranslator:
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
         print(f"统计信息已保存: {stats_file}")
-    
-    def batch_translate(self,
-                       input_dir: str,
-                       output_dir: Optional[str] = None,
-                       file_pattern: str = "*.*") -> List[Dict]:
-        """
-        批量翻译目录中的文件
-        
-        Args:
-            input_dir: 输入目录
-            output_dir: 输出目录（可选）
-            file_pattern: 文件匹配模式
-            
-        Returns:
-            翻译结果列表
-        """
-        input_path = Path(input_dir)
-        if not input_path.exists():
-            raise FileNotFoundError(f"输入目录不存在: {input_dir}")
-        
-        if output_dir is None:
-            output_dir = str(input_path / "translated")
-        
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # 查找所有支持的文件
-        supported_extensions = ProcessorFactory.get_supported_extensions()
-        files_to_translate = []
-        
-        for ext in supported_extensions:
-            pattern = f"*{ext}" if file_pattern == "*.*" else file_pattern
-            files_to_translate.extend(input_path.glob(pattern))
-        
-        if not files_to_translate:
-            print(f"在 {input_dir} 中没有找到支持的文件")
-            print(f"支持的格式: {', '.join(supported_extensions)}")
-            return []
-        
-        print(f"找到 {len(files_to_translate)} 个文件待翻译")
-        
-        results = []
-        for i, file_path in enumerate(files_to_translate, 1):
-            print(f"\n[{i}/{len(files_to_translate)}] 处理文件: {file_path.name}")
-            
-            try:
-                output_file = str(output_path / f"{file_path.stem}_translated{file_path.suffix}")
-                stats = self.translate_file(
-                    input_file=str(file_path),
-                    output_file=output_file,
-                    save_stats=True
-                )
-                results.append(stats)
-            except Exception as e:
-                print(f"翻译文件 {file_path.name} 时出错: {e}")
-                results.append({
-                    "input_file": str(file_path),
-                    "error": str(e)
-                })
-        
-        return results
     
     def get_translation_report(self, stats: Dict) -> str:
         """生成翻译报告"""
